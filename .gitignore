@@ -1,0 +1,20 @@
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets and environment variables
+.env
+
+# Sensor data and logs
+data/*
+!data/.gitkeep
+logs/*
+!logs/.gitkeep
+
+# Editor and operating system
+.vscode/
+.DS_Store
+Thumbs.db
