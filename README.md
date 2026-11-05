@@ -102,6 +102,37 @@ Evaluasi jumlah frame unik dan frame reuse menggunakan kolom `co_frame_id`, `co_
 
 Respons STCC4 juga divalidasi dengan CRC-8 per word sesuai protokol (polynomial `0x31`, initial `0xFF`). Respons CRC invalid diperlakukan sebagai pembacaan tidak valid dan dilaporkan sebagai error STCC4.
 
+## Diagnostik raw STCC4 pada Raspberry Pi
+
+Skrip [tests/hardware/diagnose_stcc4.py](tests/hardware/diagnose_stcc4.py) terpisah dari acquisition service dan tidak mengubah aturan validasi produksi. Skrip membaca 60 respons STCC4 pada interval nominal 1 detik, menyimpan raw response 12 byte, status desimal/hexadecimal, status MSB/LSB, CRC setiap blok, serta nilai CO2, temperatur, dan kelembapan ke CSV baru.
+
+Jalankan setelah I2C bus 1 dan sensor pada alamat `0x64` diverifikasi:
+
+```bash
+python3 tests/hardware/diagnose_stcc4.py \
+  --samples 60 \
+  --output data/stcc4_diagnostic_60.csv
+```
+
+File output tidak ditimpa. Gunakan nama file baru untuk setiap sesi. Jika ingin menjalankan self-test terdokumentasi sebelum pengukuran, gunakan opsi eksplisit berikut:
+
+```bash
+python3 tests/hardware/diagnose_stcc4.py \
+  --samples 60 \
+  --self-test \
+  --output data/stcc4_diagnostic_60_selftest.csv
+```
+
+Self-test memakai command STCC4 `0x278C`, menunggu 360 ms, lalu memvalidasi respons 16-bit dan CRC sesuai datasheet Sensirion. Opsi ini tidak dijalankan secara default. Jika proses dihentikan dengan `Ctrl+C`, baris yang sudah tertulis tetap tersimpan dan koneksi I2C ditutup.
+
+Interpretasi hasil:
+
+- `crc_all_valid=True` berarti keempat word CO2, temperatur, kelembapan, dan status memiliki CRC yang benar.
+- `status_msb=0x01` dan `status_lsb=0x00` menghasilkan `status_decimal=256` (`0x0100`).
+- `status_transition` dan ringkasan terminal menunjukkan perubahan antara `0x0000` dan `0x0100`.
+- Data berstatus `0x0100` tetap diagnostik dan tidak otomatis dianggap valid untuk baseline; skrip tidak mengubah aturan validasi produksi.
+- Baris `measurement_available=False` atau CRC invalid harus diperiksa sebagai masalah komunikasi/data sebelum digunakan untuk penelitian.
+
 Setelah selesai, tinjau CSV tersebut sebelum training:
 
 ```bash
