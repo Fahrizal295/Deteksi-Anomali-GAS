@@ -69,10 +69,15 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
         try:
             co_snapshot = co_reader.snapshot()
             co = co_snapshot.reading
-            if co_snapshot.error:
-                co_error = f"ZE07-CO: {co_snapshot.error}"
             if co_snapshot.is_expired:
                 co_error = "ZE07-CO: frame expired"
+            elif co is None:
+                co_error = f"ZE07-CO: {co_snapshot.error or 'no frame available'}"
+            elif not co.valid:
+                co_error = f"ZE07-CO: {co.error or 'invalid frame'}"
+            # snapshot.error is the background thread's last communication
+            # error. It remains in co_diagnostics, but must not invalidate a
+            # current valid frame that was received before that error.
         except Exception as exc:
             co_error = f"ZE07-CO snapshot: {exc}"
     else:

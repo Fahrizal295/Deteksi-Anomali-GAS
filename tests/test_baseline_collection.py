@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from src.acquisition_service import BASELINE_FIELDS, _sensor_reading, collect_baseline
 from src.models import SensorReading
+from src.sensors.ze07_co import ZE07Snapshot
 from src.validation import validate_reading
 
 
@@ -16,6 +17,15 @@ class FakeReader:
 
     def close(self):
         self.closed = True
+
+
+class SnapshotReader:
+    def __init__(self, snapshot):
+        self._snapshot = snapshot
+        self.diagnostics = {"timeouts": 1, "thread_error": "ZE07-CO UART timeout"}
+
+    def snapshot(self):
+        return self._snapshot
 
 
 def sensor_readings():
@@ -113,3 +123,51 @@ def test_partial_sensor_failure_keeps_other_sensor_value_and_diagnostics():
     assert combined.co2_valid is False
     assert "STCC4:" in (combined.co2_error or "")
     assert "invalid co2_ppm" in (combined.error or "")
+
+
+def test_fresh_valid_frame_ignores_historical_background_timeout():
+    co, co2 = sensor_readings()
+    snapshot = ZE07Snapshot(co, 7, 0.2, True, False, "FRESH", "ZE07-CO UART timeout")
+
+    combined = validate_reading(_sensor_reading(SnapshotReader(snapshot), FakeReader(co2)))
+
+    assert combined.valid is True
+    assert combined.co_valid is True
+    assert combined.co_error is None
+    assert combined.error is None
+    assert "ZE07-CO UART timeout" in (combined.co_diagnostics or "")
+
+
+def test_reused_valid_frame_is_valid_but_not_fresh_for_training():
+    co, co2 = sensor_readings()
+    snapshot = ZE07Snapshot(co, 7, 0.8, False, False, "REUSED", "ZE07-CO UART timeout")
+
+    combined = validate_reading(_sensor_reading(SnapshotReader(snapshot), FakeReader(co2)))
+
+    assert combined.valid is True
+    assert combined.co_valid is True
+    assert combined.co_is_fresh is False
+    assert combined.co_frame_state == "REUSED"
+
+
+def test_expired_frame_is_invalid_but_value_is_retained():
+    co, co2 = sensor_readings()
+    snapshot = ZE07Snapshot(co, 7, 1.6, False, True, "EXPIRED", "ZE07-CO UART timeout")
+
+    combined = validate_reading(_sensor_reading(SnapshotReader(snapshot), FakeReader(co2)))
+
+    assert combined.valid is False
+    assert combined.co_valid is False
+    assert combined.co_ppm == 0.5
+    assert combined.co_error == "ZE07-CO: frame expired"
+
+
+def test_no_frame_is_invalid():
+    _, co2 = sensor_readings()
+    snapshot = ZE07Snapshot(None, None, None, False, False, "NO_FRAME", "ZE07-CO UART timeout")
+
+    combined = validate_reading(_sensor_reading(SnapshotReader(snapshot), FakeReader(co2)))
+
+    assert combined.valid is False
+    assert combined.co_valid is False
+    assert combined.co_error == "ZE07-CO: ZE07-CO UART timeout"

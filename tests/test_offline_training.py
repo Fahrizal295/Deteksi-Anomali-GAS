@@ -34,3 +34,16 @@ def test_non_normal_scenario_is_rejected(tmp_path):
     assert report["invalid_rows"] == 12
     with pytest.raises(ValueError, match="invalid/non-normal"):
         train_from_baseline_csv(path, tmp_path / "model.joblib", approved=True)
+
+
+def test_reused_or_expired_co_frames_are_excluded_from_baseline_review(tmp_path):
+    path = tmp_path / "baseline_with_reuse.csv"
+    frame = baseline_frame()
+    frame["co_is_fresh"] = [True] * 10 + [False, True]
+    frame["co_is_expired"] = [False] * 11 + [True]
+    frame.to_csv(path, index=False)
+
+    report = review_baseline_csv(path)
+
+    assert report["rows"] == 12
+    assert report["invalid_rows"] == 2
