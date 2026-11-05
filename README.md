@@ -81,7 +81,7 @@ python3 -m src.acquisition_service \
   --output data/baseline_sensor_normal.csv
 ```
 
-Sampling menggunakan jadwal monotonic nominal 1 detik. File dibuka dalam mode append dan header/schema yang tidak cocok akan ditolak untuk mencegah pencampuran data. Data yang tersimpan mencakup timestamp, CO, CO2, temperatur, kelembapan, status STCC4, `valid`, error, source, dan waktu monotonic. `Ctrl+C` menghentikan loop dengan aman dan mempertahankan baris yang sudah tertulis.
+Sampling menggunakan jadwal monotonic nominal 1 detik. File dibuka dalam mode append dan header/schema yang tidak cocok akan ditolak untuk mencegah pencampuran data. Data yang tersimpan mencakup timestamp, CO, CO2, temperatur, kelembapan, status STCC4, validitas dan error masing-masing sensor (`co_valid`, `co_error`, `co2_valid`, `co2_error`), validitas gabungan, source, dan waktu monotonic. Retry terbatas digunakan untuk timeout transien; tidak ada nilai sintetis atau pengisian NaN. `Ctrl+C` menghentikan loop dengan aman dan mempertahankan baris yang sudah tertulis.
 
 Setelah selesai, tinjau CSV tersebut sebelum training:
 

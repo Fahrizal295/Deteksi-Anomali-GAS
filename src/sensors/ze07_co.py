@@ -23,14 +23,19 @@ class ZE07COReader:
         port: str = PORT,
         baudrate: int = BAUDRATE,
         timeout: float = 0.25,
+        read_attempts: int = 2,
         serial_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        if read_attempts < 1:
+            raise ValueError("read_attempts must be positive")
+        self.read_attempts = read_attempts
         self._serial_factory = serial_factory
         self._serial: Any | None = None
         self._buffer = bytearray()
+        self.last_error: str | None = None
 
     def open(self) -> None:
         if self._serial is not None:
@@ -69,21 +74,28 @@ class ZE07COReader:
 
     def read(self) -> SensorReading:
         self.open()
-        chunk = self._serial.read(self.FRAME_LENGTH)
-        if chunk:
-            self._buffer.extend(chunk)
-        while len(self._buffer) >= self.FRAME_LENGTH:
-            try:
-                start = self._buffer.index(0xFF)
-            except ValueError:
-                self._buffer.clear()
-                break
-            if start:
-                del self._buffer[:start]
-            if len(self._buffer) < self.FRAME_LENGTH:
-                break
-            frame = bytes(self._buffer[: self.FRAME_LENGTH])
-            del self._buffer[: self.FRAME_LENGTH]
-            if self.validate_frame(frame):
-                return self.parse_frame(frame)
-        raise TimeoutError("no valid ZE07-CO frame available")
+        for attempt in range(self.read_attempts):
+            chunk = self._serial.read(self.FRAME_LENGTH)
+            if chunk:
+                self._buffer.extend(chunk)
+            while len(self._buffer) >= self.FRAME_LENGTH:
+                try:
+                    start = self._buffer.index(0xFF)
+                except ValueError:
+                    self._buffer.clear()
+                    self.last_error = "ZE07-CO UART buffer has no frame header"
+                    break
+                if start:
+                    del self._buffer[:start]
+                if len(self._buffer) < self.FRAME_LENGTH:
+                    break
+                frame = bytes(self._buffer[: self.FRAME_LENGTH])
+                del self._buffer[: self.FRAME_LENGTH]
+                if self.validate_frame(frame):
+                    self.last_error = None
+                    return self.parse_frame(frame)
+                self.last_error = "ZE07-CO invalid frame or checksum"
+            if attempt + 1 < self.read_attempts:
+                continue
+        self.last_error = self.last_error or "ZE07-CO UART timeout"
+        raise TimeoutError(self.last_error)

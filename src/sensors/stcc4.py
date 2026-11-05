@@ -13,8 +13,18 @@ from ..validation import validate_stcc4_status
 class STCC4Reader:
     """Thin adapter around the vendored official DFRobot Python driver."""
 
-    def __init__(self, address: int = 0x64, driver: Any | None = None) -> None:
+    def __init__(
+        self,
+        address: int = 0x64,
+        driver: Any | None = None,
+        read_attempts: int = 2,
+        retry_delay_seconds: float = 0.05,
+    ) -> None:
         self.address = address
+        if read_attempts < 1:
+            raise ValueError("read_attempts must be positive")
+        self.read_attempts = read_attempts
+        self.retry_delay_seconds = retry_delay_seconds
         self._driver = driver
         self._started = False
 
@@ -35,9 +45,15 @@ class STCC4Reader:
 
     def read(self) -> SensorReading:
         self.open()
-        measurement = self._driver.measurement()
+        measurement = None
+        for attempt in range(self.read_attempts):
+            measurement = self._driver.measurement()
+            if measurement is not None:
+                break
+            if attempt + 1 < self.read_attempts:
+                time.sleep(self.retry_delay_seconds)
         if measurement is None:
-            raise TimeoutError("STCC4 measurement not available yet")
+            raise TimeoutError("STCC4 measurement not available after retries")
         co2_ppm, temperature_c, humidity_rh, status = measurement
         valid, error = validate_stcc4_status(int(status))
         return SensorReading(

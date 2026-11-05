@@ -20,6 +20,24 @@ def test_ze07_parser_validates_uart_frame():
     assert not ZE07COReader.validate_frame(ze07_frame(12.3)[:-1] + b"\x00")
 
 
+def test_ze07_retries_a_transient_uart_timeout():
+    class Serial:
+        def __init__(self):
+            self.calls = 0
+
+        def read(self, _size):
+            self.calls += 1
+            return b"" if self.calls == 1 else ze07_frame(0.5)
+
+        def close(self):
+            pass
+
+    serial = Serial()
+    reading = ZE07COReader(serial_factory=lambda *args, **kwargs: serial).read()
+    assert reading.co_ppm == 0.5
+    assert serial.calls == 2
+
+
 class FakeSTCC4:
     def start_measurement(self):
         return True
@@ -37,6 +55,21 @@ def test_stcc4_adapter_keeps_temperature_humidity_and_valid_status():
     assert reading.temperature_c == 25.0
     assert reading.humidity_rh == 50.0
     assert reading.valid is True
+
+
+def test_stcc4_retries_when_measurement_is_not_ready():
+    class FlakySTCC4(FakeSTCC4):
+        def __init__(self):
+            self.calls = 0
+
+        def measurement(self):
+            self.calls += 1
+            return None if self.calls == 1 else (450, 25.0, 50.0, 0)
+
+    driver = FlakySTCC4()
+    reading = STCC4Reader(driver=driver, retry_delay_seconds=0).read()
+    assert reading.valid is True
+    assert driver.calls == 2
 
 
 def test_status_256_is_not_silently_valid():

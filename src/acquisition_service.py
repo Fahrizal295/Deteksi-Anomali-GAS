@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .acquisition_control import read_command
@@ -12,7 +13,7 @@ from .anomaly_detector import IsolationForestDetector
 from .config import DEFAULT_CONFIG
 from .dummy_generator import SCENARIOS, generate_scenario
 from .models import SensorReading
-from .sensor_pipeline import SensorPipeline, dummy_reading, error_reading
+from .sensor_pipeline import SensorPipeline, dummy_reading
 from .validation import validate_reading
 
 BASELINE_FIELDS = (
@@ -26,6 +27,10 @@ BASELINE_FIELDS = (
     "error",
     "source",
     "monotonic_time",
+    "co_valid",
+    "co_error",
+    "co2_valid",
+    "co2_error",
 )
 
 
@@ -41,18 +46,37 @@ def _write_row(path: Path, row: dict[str, object]) -> None:
 
 
 def _sensor_reading(co_reader, co2_reader) -> SensorReading:
+    co = co2 = None
+    co_error = co2_error = None
     try:
         co = co_reader.read()
+    except Exception as exc:
+        co_error = f"ZE07-CO: {exc}"
+    try:
         co2 = co2_reader.read()
-        return SensorReading(
-            timestamp=co.timestamp, monotonic_time=time.monotonic(), co_ppm=co.co_ppm,
-            co2_ppm=co2.co2_ppm, temperature_c=co2.temperature_c,
-            humidity_rh=co2.humidity_rh, co2_status=co2.co2_status,
-            source="SENSOR", valid=co.valid and co2.valid,
-            error="; ".join(error for error in (co.error, co2.error) if error) or None,
-        )
-    except Exception as exc:  # hardware errors become traceable SENSOR_ERROR rows
-        return error_reading("SENSOR", f"acquisition error: {exc}")
+    except Exception as exc:
+        co2_error = f"STCC4: {exc}"
+
+    timestamp = co.timestamp if co is not None else (
+        co2.timestamp if co2 is not None else datetime.now(timezone.utc)
+    )
+    errors = [error for error in (co_error, co2_error, getattr(co, "error", None), getattr(co2, "error", None)) if error]
+    return SensorReading(
+        timestamp=timestamp,
+        monotonic_time=time.monotonic(),
+        co_ppm=co.co_ppm if co is not None else None,
+        co2_ppm=co2.co2_ppm if co2 is not None else None,
+        temperature_c=co2.temperature_c if co2 is not None else None,
+        humidity_rh=co2.humidity_rh if co2 is not None else None,
+        co2_status=co2.co2_status if co2 is not None else None,
+        source="SENSOR",
+        valid=bool(co is not None and co2 is not None and co.valid and co2.valid),
+        error="; ".join(errors) or None,
+        co_valid=co.valid if co is not None else False,
+        co_error=co_error or (co.error if co is not None else None),
+        co2_valid=co2.valid if co2 is not None else False,
+        co2_error=co2_error or (co2.error if co2 is not None else None),
+    )
 
 
 def _open_sensor_readers():
