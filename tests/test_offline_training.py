@@ -47,3 +47,17 @@ def test_reused_or_expired_co_frames_are_excluded_from_baseline_review(tmp_path)
 
     assert report["rows"] == 12
     assert report["invalid_rows"] == 2
+
+
+def test_baseline_report_explicitly_records_accepted_stcc4_statuses(tmp_path):
+    path = tmp_path / "baseline_status_policy.csv"
+    frame = baseline_frame()
+    frame["co2_status"] = [0] * 6 + [256] * 6
+    frame.to_csv(path, index=False)
+
+    report = review_baseline_csv(path)
+
+    assert report["invalid_rows"] == 0
+    assert report["stcc4_status_policy"]["accepted_raw_statuses"] == ["0x0000", "0x0100"]
+    assert report["stcc4_status_counts"] == {"0x0000": 6, "0x0100": 6}
+    assert report["stcc4_status_invalid_rows"] == 0

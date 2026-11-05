@@ -12,6 +12,7 @@ from .config import DEFAULT_CONFIG, SimulationConfig
 from .dummy_generator import GasSample
 from .feature_extraction import extract_features
 from .preprocessing import preprocess_samples
+from .validation import STCC4_ACCEPTED_STATUSES, STCC4_STATUS_POLICY
 
 REQUIRED_COLUMNS = ("timestamp", "co_ppm", "co2_ppm")
 
@@ -27,6 +28,22 @@ def review_baseline_csv(path: str | Path) -> dict[str, object]:
     co = pd.to_numeric(frame["co_ppm"], errors="coerce")
     co2 = pd.to_numeric(frame["co2_ppm"], errors="coerce")
     invalid = timestamps.isna() | co.isna() | co2.isna() | (co < 0) | (co2 < 0)
+    status_counts: dict[str, int] = {}
+    status_invalid_rows = 0
+    status_policy: dict[str, object] = {
+        "name": STCC4_STATUS_POLICY,
+        "accepted_raw_statuses": [f"0x{status:04X}" for status in sorted(STCC4_ACCEPTED_STATUSES)],
+        "status_column_present": "co2_status" in frame.columns,
+    }
+    if "co2_status" in frame:
+        status = pd.to_numeric(frame["co2_status"], errors="coerce")
+        status_counts = {
+            f"0x{int(value):04X}": int(count)
+            for value, count in status.dropna().value_counts().items()
+        }
+        invalid_status = status.isna() | ~status.isin(STCC4_ACCEPTED_STATUSES)
+        status_invalid_rows = int(invalid_status.sum())
+        invalid = invalid | invalid_status
     if "scenario" in frame:
         invalid = invalid | frame["scenario"].fillna("normal").ne("normal")
     if "co_is_fresh" in frame:
@@ -46,6 +63,9 @@ def review_baseline_csv(path: str | Path) -> dict[str, object]:
         "co_max": None if co.dropna().empty else float(co.max()),
         "co2_min": None if co2.dropna().empty else float(co2.min()),
         "co2_max": None if co2.dropna().empty else float(co2.max()),
+        "stcc4_status_policy": status_policy,
+        "stcc4_status_counts": status_counts,
+        "stcc4_status_invalid_rows": status_invalid_rows,
     }
 
 

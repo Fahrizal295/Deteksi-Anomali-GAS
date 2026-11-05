@@ -13,7 +13,7 @@ Repository ini memisahkan akuisisi, pemrosesan, model, dan dashboard. Sensor akt
 - `src/dashboard.py`: Streamlit read-only terhadap CSV; browser refresh tidak menginisialisasi sensor atau melatih model.
 - `src/sensors/vendor/DFRobot_STCC4.py`: kode driver DFRobot resmi yang divendorkan dengan atribusi dan lisensi MIT.
 
-Threshold 35 ppm CO dan 1000 ppm CO2 adalah parameter simulasi operasional, bukan klaim batas kesehatan sesaat. Threshold alert memakai nilai sensor valid sebelum SMA. Data invalid, termasuk status STCC4 256/0x0100 yang belum terverifikasi pada unit fisik, tidak masuk SMA atau model.
+Threshold 35 ppm CO dan 1000 ppm CO2 adalah parameter simulasi operasional, bukan klaim batas kesehatan sesaat. Threshold alert memakai nilai sensor valid sebelum SMA. Kebijakan akuisisi STCC4 menerima status raw `0x0000` dan `0x0100`; CRC gagal, I2C error, data kosong, dan nilai numerik tidak masuk akal tetap invalid.
 
 Dashboard menampilkan dua indikator berbeda: `if_status` (`NOT READY`, `NORMAL`, `ANOMALY`) adalah hasil Isolation Forest, sedangkan `safety_status` (`NORMAL`, `EARLY WARNING`, `THRESHOLD ALERT`, `SENSOR ERROR`) mengikuti kebijakan operasional. Anomali statistik tidak otomatis berarti kondisi berbahaya.
 
@@ -130,7 +130,7 @@ Interpretasi hasil:
 - `crc_all_valid=True` berarti keempat word CO2, temperatur, kelembapan, dan status memiliki CRC yang benar.
 - `status_msb=0x01` dan `status_lsb=0x00` menghasilkan `status_decimal=256` (`0x0100`).
 - `status_transition` dan ringkasan terminal menunjukkan perubahan antara `0x0000` dan `0x0100`.
-- Data berstatus `0x0100` tetap diagnostik dan tidak otomatis dianggap valid untuk baseline; skrip tidak mengubah aturan validasi produksi.
+- Data berstatus `0x0100` diterima sesuai kebijakan akuisisi terbaru, tetapi tetap disimpan sebagai raw status dan dilaporkan dalam review baseline; skrip diagnostik tidak mengubah dataset lama.
 - Baris `measurement_available=False` atau CRC invalid harus diperiksa sebagai masalah komunikasi/data sebelum digunakan untuk penelitian.
 
 Setelah selesai, tinjau CSV tersebut sebelum training:

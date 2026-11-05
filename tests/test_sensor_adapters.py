@@ -154,7 +154,26 @@ def test_stcc4_retries_when_measurement_is_not_ready():
     assert driver.calls == 2
 
 
-def test_status_256_is_not_silently_valid():
-    assert validate_stcc4_status(256)[0] is False
+def test_status_0000_and_0100_are_accepted_as_raw_acquisition_statuses():
+    assert validate_stcc4_status(0) == (True, None)
+    assert validate_stcc4_status(0x0100) == (True, None)
     reading = SensorReading(datetime.now(timezone.utc), 0.0, 8.0, 450.0, co2_status=256)
+    checked = validate_reading(reading)
+    assert checked.valid is True
+    assert checked.co2_status == 0x0100
+
+
+def test_stcc4_testing_status_remains_invalid():
+    reading = SensorReading(datetime.now(timezone.utc), 0.0, 8.0, 450.0, co2_status=4)
     assert validate_reading(reading).valid is False
+
+
+def test_stcc4_measurement_none_is_an_i2c_or_availability_failure():
+    class UnavailableSTCC4(FakeSTCC4):
+        def measurement(self):
+            return None
+
+    reader = STCC4Reader(driver=UnavailableSTCC4(), read_attempts=1)
+    with pytest.raises(TimeoutError, match="not available"):
+        reader.read()
+    assert reader.diagnostics["measurement_unavailable"] == 1

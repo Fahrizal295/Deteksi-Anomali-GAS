@@ -12,15 +12,16 @@ def reading(index: int, co: float = 8.0, co2: float = 450.0, status: int = 0):
     )
 
 
-def test_pipeline_excludes_invalid_status_from_moving_average():
+def test_pipeline_accepts_status_0100_and_preserves_raw_status():
     pipeline = SensorPipeline(train_normal_detector())
     for index in range(5):
         pipeline.process(reading(index))
     before = len(pipeline.valid_samples)
-    invalid = pipeline.process(reading(5, status=256))
-    assert invalid["status"] == "SENSOR ERROR"
-    assert len(pipeline.valid_samples) == before
-    assert pipeline.rows[-1]["co_ma"] is None
+    accepted = pipeline.process(reading(5, status=256))
+    assert accepted["status"] != "SENSOR ERROR"
+    assert accepted["co2_status"] == 256
+    assert len(pipeline.valid_samples) == before + 1
+    assert pipeline.rows[-1]["co_ma"] is not None
 
 
 def test_pipeline_keeps_environmental_values_out_of_model_features():
@@ -45,7 +46,7 @@ def test_isolation_status_is_separate_from_safety_status():
 
 def test_sensor_error_sets_both_status_indicators():
     pipeline = SensorPipeline(train_normal_detector())
-    result = pipeline.process(reading(0, status=256))
+    result = pipeline.process(reading(0, status=4))
     assert result["if_status"] == "SENSOR ERROR"
     assert result["safety_status"] == "SENSOR ERROR"
     assert result["status"] == "SENSOR ERROR"

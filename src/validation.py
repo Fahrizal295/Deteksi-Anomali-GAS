@@ -7,21 +7,21 @@ from dataclasses import replace
 
 from .models import SensorReading
 
-# STCC4 reports the raw status word. The documented testing-mode marker is
-# byte 10 == 4; 0x0100 (256) is not that marker and is therefore unknown until
-# raw-byte verification is completed on the physical unit.
+# STCC4 reports the raw status word. The acquisition policy explicitly accepts
+# both observed normal statuses and preserves the raw value for audit. CRC,
+# I2C/read availability, and numeric checks remain independent requirements.
 STCC4_STATUS_OK = 0
+STCC4_STATUS_0100 = 0x0100
 STCC4_STATUS_TESTING_MODE_BYTE10 = 4
-STCC4_STATUS_UNKNOWN_256 = 256
+STCC4_ACCEPTED_STATUSES = frozenset({STCC4_STATUS_OK, STCC4_STATUS_0100})
+STCC4_STATUS_POLICY = "accept_0x0000_and_0x0100_raw_status"
 
 
 def validate_stcc4_status(status: int | None) -> tuple[bool, str | None]:
     if status is None:
         return False, "missing STCC4 status"
-    if status == STCC4_STATUS_OK:
+    if status in STCC4_ACCEPTED_STATUSES:
         return True, None
-    if status == STCC4_STATUS_UNKNOWN_256:
-        return False, "STCC4 status 256/0x0100 requires hardware verification"
     if status & STCC4_STATUS_TESTING_MODE_BYTE10:
         return False, "STCC4 testing mode or non-zero status"
     return False, f"STCC4 non-zero status: {status}"
