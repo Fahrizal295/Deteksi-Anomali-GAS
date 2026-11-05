@@ -8,9 +8,22 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+from dataclasses import dataclass
+from threading import Event, Lock, Thread, current_thread
 from typing import Any, Callable
 
 from ..models import SensorReading
+
+
+@dataclass(frozen=True)
+class ZE07Snapshot:
+    reading: SensorReading | None
+    frame_id: int | None
+    age_seconds: float | None
+    is_fresh: bool
+    is_expired: bool
+    frame_state: str
+    error: str | None = None
 
 
 class ZE07COReader:
@@ -142,3 +155,86 @@ class ZE07COReader:
         self.timeouts += 1
         self.last_error = self.last_error or "ZE07-CO UART timeout"
         raise TimeoutError(self.last_error)
+
+
+class ZE07COBackgroundReader:
+    """Continuously receive active-upload frames independently of the scheduler."""
+
+    def __init__(
+        self,
+        reader: ZE07COReader | None = None,
+        freshness_timeout_seconds: float = 1.5,
+    ) -> None:
+        if freshness_timeout_seconds <= 0:
+            raise ValueError("freshness_timeout_seconds must be positive")
+        self.reader = reader or ZE07COReader()
+        self.freshness_timeout_seconds = freshness_timeout_seconds
+        self._lock = Lock()
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self._latest: SensorReading | None = None
+        self._frame_id: int | None = None
+        self._next_frame_id = 0
+        self._last_snapshot_frame_id: int | None = None
+        self._thread_error: str | None = None
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self.reader.open()
+        self._stop_event.clear()
+        self._thread = Thread(target=self._run, name="ze07-co-uart-reader", daemon=False)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None and self._thread is not current_thread():
+            # Let the bounded serial timeout finish first. If the driver is
+            # still blocked, close the port to release the read.
+            self._thread.join(timeout=0.1)
+            if self._thread.is_alive():
+                self.reader.close()
+                self._thread.join(timeout=1.0)
+        self.reader.close()
+        if self._thread is not None and self._thread.is_alive():
+            self.reader.close()
+        self._thread = None
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                reading = self.reader.read()
+            except Exception as exc:
+                with self._lock:
+                    self._thread_error = str(exc)
+                continue
+            with self._lock:
+                self._next_frame_id += 1
+                self._frame_id = self._next_frame_id
+                self._latest = reading
+                self._thread_error = None
+
+    def snapshot(self, now_monotonic: float | None = None) -> ZE07Snapshot:
+        now = time.monotonic() if now_monotonic is None else now_monotonic
+        with self._lock:
+            reading = self._latest
+            frame_id = self._frame_id
+            thread_error = self._thread_error
+            diagnostics = self.reader.diagnostics
+            if reading is None or frame_id is None:
+                return ZE07Snapshot(None, None, None, False, False, "NO_FRAME", thread_error)
+            age = max(0.0, now - reading.monotonic_time)
+            expired = age > self.freshness_timeout_seconds
+            fresh = frame_id != self._last_snapshot_frame_id and not expired
+            state = "EXPIRED" if expired else ("FRESH" if fresh else "REUSED")
+            self._last_snapshot_frame_id = frame_id
+            return ZE07Snapshot(reading, frame_id, age, fresh, expired, state, thread_error)
+
+    @property
+    def diagnostics(self) -> dict[str, int | str | None]:
+        with self._lock:
+            result = dict(self.reader.diagnostics)
+            result["frame_id"] = self._frame_id
+            result["freshness_timeout_seconds"] = self.freshness_timeout_seconds
+            result["thread_error"] = self._thread_error
+            return result

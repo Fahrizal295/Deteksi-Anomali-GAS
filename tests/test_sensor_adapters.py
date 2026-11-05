@@ -4,7 +4,7 @@ import pytest
 
 from src.models import SensorReading
 from src.sensors.stcc4 import STCC4Reader
-from src.sensors.ze07_co import ZE07COReader
+from src.sensors.ze07_co import ZE07COBackgroundReader, ZE07COReader
 from src.validation import validate_reading, validate_stcc4_status
 
 
@@ -81,6 +81,43 @@ def test_ze07_reports_checksum_error_and_timeout():
         raise AssertionError("corrupt frame should time out")
     assert reader.diagnostics["checksum_errors"] == 1
     assert reader.diagnostics["timeouts"] == 1
+
+
+def test_background_reader_marks_fresh_reused_and_expired_frames():
+    class FakeReader:
+        def __init__(self):
+            self.reading = ZE07COReader.parse_frame(ze07_frame(0.5), monotonic_time=10.0)
+            self.sent = False
+            self.diagnostics = {"frames_valid": 1}
+
+        def open(self):
+            pass
+
+        def read(self):
+            if not self.sent:
+                self.sent = True
+                return self.reading
+            raise TimeoutError("no next frame")
+
+        def close(self):
+            pass
+
+    reader = FakeReader()
+    background = ZE07COBackgroundReader(reader=reader, freshness_timeout_seconds=1.5)
+    background.start()
+    import time
+    time.sleep(0.02)
+    first = background.snapshot(now_monotonic=10.1)
+    second = background.snapshot(now_monotonic=10.2)
+    expired = background.snapshot(now_monotonic=12.0)
+    background.stop()
+    assert first.frame_id == 1
+    assert first.is_fresh is True
+    assert second.is_fresh is False
+    assert second.frame_state == "REUSED"
+    assert expired.is_fresh is False
+    assert expired.is_expired is True
+    assert expired.frame_state == "EXPIRED"
 
 
 class FakeSTCC4:

@@ -29,6 +29,10 @@ def validate_stcc4_status(status: int | None) -> tuple[bool, str | None]:
 
 def validate_reading(reading: SensorReading) -> SensorReading:
     errors: list[str] = []
+    if not reading.valid:
+        errors.append(reading.error or "reading marked invalid")
+    elif reading.error:
+        errors.append(reading.error)
     for name, value in (("co_ppm", reading.co_ppm), ("co2_ppm", reading.co2_ppm)):
         if value is None or not math.isfinite(float(value)) or float(value) < 0:
             errors.append(f"invalid {name}")

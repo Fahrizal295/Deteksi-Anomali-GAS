@@ -5,6 +5,7 @@ Repository ini memisahkan akuisisi, pemrosesan, model, dan dashboard. Sensor akt
 ## Arsitektur
 
 - `src/sensors/`: adapter ZE07-CO dan STCC4. Adapter tidak membuka hardware ketika modul diimpor.
+- `ZE07COBackgroundReader`: thread khusus active-upload UART yang menyimpan frame valid terbaru; scheduler 1 Hz hanya mengambil snapshot non-blocking.
 - `src/acquisition_service.py`: proses terpisah yang membaca DUMMY atau SENSOR setiap 1 detik, memvalidasi status, menjalankan SMA causal 5 sampel, inference Isolation Forest, dan menulis CSV. Proses ini tidak melatih model secara otomatis.
 - `src/acquisition_service.py --mode collect-baseline`: proses akuisisi baseline sensor-only; tidak memuat, melatih, atau menjalankan Isolation Forest.
 - `src/sensor_pipeline.py`: pipeline validasi -> SMA -> fitur `co_ma`, `co2_ma` -> inference -> warning.
@@ -82,8 +83,22 @@ python3 -m src.acquisition_service \
 ```
 
 Sampling menggunakan jadwal monotonic nominal 1 detik. File dibuka dalam mode append dan header/schema yang tidak cocok akan ditolak untuk mencegah pencampuran data. Data yang tersimpan mencakup timestamp siklus, timestamp sensor individual (`co_timestamp`, `co2_timestamp`), waktu UTC dan monotonic awal/akhir siklus, CO, CO2, temperatur, kelembapan, status STCC4, validitas dan error masing-masing sensor (`co_valid`, `co_error`, `co2_valid`, `co2_error`), validitas gabungan, source, serta diagnostik JSON (`co_diagnostics`, `co2_diagnostics`). Retry ZE07-CO maksimal dua percobaan dengan timeout serial 250 ms; STCC4 maksimal satu retry setelah 150 ms sesuai datasheet. Tidak ada nilai sintetis atau pengisian NaN. `Ctrl+C` menghentikan loop dengan aman dan mempertahankan baris yang sudah tertulis.
+Snapshot ZE07-CO menggunakan `ze07_freshness_timeout_seconds=1.5` sebagai freshness timeout awal. Kolom `co_frame_id`, `co_age_seconds`, `co_is_fresh`, `co_is_expired`, dan `co_frame_state` membedakan frame baru, frame yang dipakai ulang dalam batas freshness, dan frame kedaluwarsa. Frame `REUSED` tidak boleh dihitung sebagai observasi CO independen saat menyiapkan baseline training.
 
 Schema baseline dengan kolom diagnostik adalah schema baru. File baseline lama tidak ditimpa atau dicampur; gunakan nama file pengujian baru jika header lama ditolak. Modul training offline tetap hanya membutuhkan kolom inti `timestamp`, `co_ppm`, dan `co2_ppm`, sehingga file baseline baru tetap dapat ditinjau sebelum training.
+
+## Pengujian timing 180 detik
+
+Setelah warm-up sensor, jalankan pada Raspberry Pi dengan file baru:
+
+```bash
+python3 -m src.acquisition_service \
+  --mode collect-baseline \
+  --duration 180 \
+  --output data/baseline_sensor_180s_v2.csv
+```
+
+Evaluasi jumlah frame unik dan frame reuse menggunakan kolom `co_frame_id`, `co_is_fresh`, `co_is_expired`, dan `co_age_seconds`. Bandingkan juga `cycle_start_monotonic`, `cycle_end_monotonic`, serta `co_timestamp`. Pengujian ini tidak melatih atau menjalankan Isolation Forest.
 
 Respons STCC4 juga divalidasi dengan CRC-8 per word sesuai protokol (polynomial `0x31`, initial `0xFF`). Respons CRC invalid diperlakukan sebagai pembacaan tidak valid dan dilaporkan sebagai error STCC4.
 

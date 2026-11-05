@@ -29,6 +29,10 @@ def review_baseline_csv(path: str | Path) -> dict[str, object]:
     invalid = timestamps.isna() | co.isna() | co2.isna() | (co < 0) | (co2 < 0)
     if "scenario" in frame:
         invalid = invalid | frame["scenario"].fillna("normal").ne("normal")
+    if "co_is_fresh" in frame:
+        invalid = invalid | frame["co_is_fresh"].astype(str).str.lower().ne("true")
+    if "co_is_expired" in frame:
+        invalid = invalid | frame["co_is_expired"].astype(str).str.lower().eq("true")
     return {
         "path": str(source),
         "rows": int(len(frame)),

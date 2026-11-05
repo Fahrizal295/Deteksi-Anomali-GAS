@@ -40,6 +40,11 @@ BASELINE_FIELDS = (
     "cycle_end_monotonic",
     "co_diagnostics",
     "co2_diagnostics",
+    "co_frame_id",
+    "co_age_seconds",
+    "co_is_fresh",
+    "co_is_expired",
+    "co_frame_state",
 )
 
 
@@ -59,10 +64,22 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
     cycle_start_timestamp = datetime.now(timezone.utc)
     co = co2 = None
     co_error = co2_error = None
-    try:
-        co = co_reader.read()
-    except Exception as exc:
-        co_error = f"ZE07-CO: {exc}"
+    co_snapshot = None
+    if hasattr(co_reader, "snapshot"):
+        try:
+            co_snapshot = co_reader.snapshot()
+            co = co_snapshot.reading
+            if co_snapshot.error:
+                co_error = f"ZE07-CO: {co_snapshot.error}"
+            if co_snapshot.is_expired:
+                co_error = "ZE07-CO: frame expired"
+        except Exception as exc:
+            co_error = f"ZE07-CO snapshot: {exc}"
+    else:
+        try:
+            co = co_reader.read()
+        except Exception as exc:
+            co_error = f"ZE07-CO: {exc}"
     try:
         co2 = co2_reader.read()
     except Exception as exc:
@@ -84,9 +101,15 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
         humidity_rh=co2.humidity_rh if co2 is not None else None,
         co2_status=co2.co2_status if co2 is not None else None,
         source="SENSOR",
-        valid=bool(co is not None and co2 is not None and co.valid and co2.valid),
+        valid=bool(
+            co is not None
+            and co2 is not None
+            and co.valid
+            and co2.valid
+            and not (co_snapshot is not None and co_snapshot.is_expired)
+        ),
         error="; ".join(errors) or None,
-        co_valid=co.valid if co is not None else False,
+        co_valid=(co.valid and not co_snapshot.is_expired) if co is not None and co_snapshot is not None else (co.valid if co is not None else False),
         co_error=co_error or (co.error if co is not None else None),
         co2_valid=co2.valid if co2 is not None else False,
         co2_error=co2_error or (co2.error if co2 is not None else None),
@@ -98,19 +121,26 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
         cycle_end_monotonic=cycle_end_monotonic,
         co_diagnostics=co_diagnostics,
         co2_diagnostics=co2_diagnostics,
+        co_frame_id=co_snapshot.frame_id if co_snapshot is not None else None,
+        co_age_seconds=co_snapshot.age_seconds if co_snapshot is not None else None,
+        co_is_fresh=co_snapshot.is_fresh if co_snapshot is not None else (co is not None),
+        co_is_expired=co_snapshot.is_expired if co_snapshot is not None else False,
+        co_frame_state=co_snapshot.frame_state if co_snapshot is not None else ("DIRECT" if co is not None else "NO_FRAME"),
     )
 
 
 def _open_sensor_readers():
     from .sensors.stcc4 import STCC4Reader
-    from .sensors.ze07_co import ZE07COReader
+    from .sensors.ze07_co import ZE07COBackgroundReader
 
-    co_reader, co2_reader = ZE07COReader(), STCC4Reader()
-    co_reader.open()
+    co_reader, co2_reader = ZE07COBackgroundReader(
+        freshness_timeout_seconds=DEFAULT_CONFIG.ze07_freshness_timeout_seconds
+    ), STCC4Reader()
+    co_reader.start()
     try:
         co2_reader.open()
     except Exception:
-        co_reader.close()
+        co_reader.stop()
         raise
     return co_reader, co2_reader
 
@@ -170,7 +200,10 @@ def collect_baseline(
         print(f"Baseline collection interrupted safely after {count} samples.")
     finally:
         if owns_readers:
-            co_reader.close()
+            if hasattr(co_reader, "stop"):
+                co_reader.stop()
+            else:
+                co_reader.close()
             co2_reader.close()
     return count
 
@@ -190,9 +223,11 @@ def run(mode: str, scenario: str, output: Path, model_path: Path, control: Path,
     co_reader = co2_reader = None
     if mode == "sensor":
         from .sensors.stcc4 import STCC4Reader
-        from .sensors.ze07_co import ZE07COReader
-        co_reader, co2_reader = ZE07COReader(), STCC4Reader()
-        co_reader.open(); co2_reader.open()
+        from .sensors.ze07_co import ZE07COBackgroundReader
+        co_reader, co2_reader = ZE07COBackgroundReader(
+            freshness_timeout_seconds=DEFAULT_CONFIG.ze07_freshness_timeout_seconds
+        ), STCC4Reader()
+        co_reader.start(); co2_reader.open()
     paused = False
     index = 0
     next_tick = time.monotonic()
@@ -216,7 +251,11 @@ def run(mode: str, scenario: str, output: Path, model_path: Path, control: Path,
             next_tick += DEFAULT_CONFIG.sampling_interval_seconds
             time.sleep(max(0.0, next_tick - time.monotonic()))
     finally:
-        if co_reader is not None: co_reader.close()
+        if co_reader is not None:
+            if hasattr(co_reader, "stop"):
+                co_reader.stop()
+            else:
+                co_reader.close()
         if co2_reader is not None: co2_reader.close()
 
 

@@ -32,6 +32,11 @@ class SensorReading:
     cycle_end_monotonic: float | None = None
     co_diagnostics: str | None = None
     co2_diagnostics: str | None = None
+    co_frame_id: int | None = None
+    co_age_seconds: float | None = None
+    co_is_fresh: bool | None = None
+    co_is_expired: bool | None = None
+    co_frame_state: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -10,6 +10,7 @@ class SimulationConfig:
     co_threshold_ppm: float = 35.0
     co2_threshold_ppm: float = 1000.0
     sampling_interval_seconds: int = 1
+    ze07_freshness_timeout_seconds: float = 1.5
     moving_average_window: int = 5
     comparable_moving_average_windows: tuple[int, ...] = (3, 5, 7)
     isolation_forest_estimators: int = 100
