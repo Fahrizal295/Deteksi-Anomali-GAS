@@ -18,7 +18,7 @@ class STCC4Reader:
         address: int = 0x64,
         driver: Any | None = None,
         read_attempts: int = 2,
-        retry_delay_seconds: float = 0.05,
+        retry_delay_seconds: float = 0.15,
     ) -> None:
         self.address = address
         if read_attempts < 1:
@@ -27,6 +27,19 @@ class STCC4Reader:
         self.retry_delay_seconds = retry_delay_seconds
         self._driver = driver
         self._started = False
+        self.total_read_attempts = 0
+        self.measurement_unavailable = 0
+        self.measurements_valid = 0
+        self.last_error: str | None = None
+
+    @property
+    def diagnostics(self) -> dict[str, int | str | None]:
+        return {
+            "read_attempts": self.total_read_attempts,
+            "measurement_unavailable": self.measurement_unavailable,
+            "measurements_valid": self.measurements_valid,
+            "last_error": self.last_error,
+        }
 
     def open(self) -> None:
         if self._driver is None:
@@ -47,15 +60,20 @@ class STCC4Reader:
         self.open()
         measurement = None
         for attempt in range(self.read_attempts):
+            self.total_read_attempts += 1
             measurement = self._driver.measurement()
             if measurement is not None:
                 break
+            self.measurement_unavailable += 1
             if attempt + 1 < self.read_attempts:
                 time.sleep(self.retry_delay_seconds)
         if measurement is None:
-            raise TimeoutError("STCC4 measurement not available after retries")
+            self.last_error = "STCC4 measurement not available after retries"
+            raise TimeoutError(self.last_error)
         co2_ppm, temperature_c, humidity_rh, status = measurement
         valid, error = validate_stcc4_status(int(status))
+        self.measurements_valid += 1
+        self.last_error = error
         return SensorReading(
             timestamp=datetime.now(timezone.utc),
             monotonic_time=time.monotonic(),

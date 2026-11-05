@@ -81,7 +81,11 @@ python3 -m src.acquisition_service \
   --output data/baseline_sensor_normal.csv
 ```
 
-Sampling menggunakan jadwal monotonic nominal 1 detik. File dibuka dalam mode append dan header/schema yang tidak cocok akan ditolak untuk mencegah pencampuran data. Data yang tersimpan mencakup timestamp, CO, CO2, temperatur, kelembapan, status STCC4, validitas dan error masing-masing sensor (`co_valid`, `co_error`, `co2_valid`, `co2_error`), validitas gabungan, source, dan waktu monotonic. Retry terbatas digunakan untuk timeout transien; tidak ada nilai sintetis atau pengisian NaN. `Ctrl+C` menghentikan loop dengan aman dan mempertahankan baris yang sudah tertulis.
+Sampling menggunakan jadwal monotonic nominal 1 detik. File dibuka dalam mode append dan header/schema yang tidak cocok akan ditolak untuk mencegah pencampuran data. Data yang tersimpan mencakup timestamp siklus, timestamp sensor individual (`co_timestamp`, `co2_timestamp`), waktu UTC dan monotonic awal/akhir siklus, CO, CO2, temperatur, kelembapan, status STCC4, validitas dan error masing-masing sensor (`co_valid`, `co_error`, `co2_valid`, `co2_error`), validitas gabungan, source, serta diagnostik JSON (`co_diagnostics`, `co2_diagnostics`). Retry ZE07-CO maksimal dua percobaan dengan timeout serial 250 ms; STCC4 maksimal satu retry setelah 150 ms sesuai datasheet. Tidak ada nilai sintetis atau pengisian NaN. `Ctrl+C` menghentikan loop dengan aman dan mempertahankan baris yang sudah tertulis.
+
+Schema baseline dengan kolom diagnostik adalah schema baru. File baseline lama tidak ditimpa atau dicampur; gunakan nama file pengujian baru jika header lama ditolak. Modul training offline tetap hanya membutuhkan kolom inti `timestamp`, `co_ppm`, dan `co2_ppm`, sehingga file baseline baru tetap dapat ditinjau sebelum training.
+
+Respons STCC4 juga divalidasi dengan CRC-8 per word sesuai protokol (polynomial `0x31`, initial `0xFF`). Respons CRC invalid diperlakukan sebagai pembacaan tidak valid dan dilaporkan sebagai error STCC4.
 
 Setelah selesai, tinjau CSV tersebut sebelum training:
 

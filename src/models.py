@@ -24,6 +24,14 @@ class SensorReading:
     co_error: str | None = None
     co2_valid: bool | None = None
     co2_error: str | None = None
+    co_timestamp: datetime | None = None
+    co2_timestamp: datetime | None = None
+    cycle_start_timestamp: datetime | None = None
+    cycle_end_timestamp: datetime | None = None
+    cycle_start_monotonic: float | None = None
+    cycle_end_monotonic: float | None = None
+    co_diagnostics: str | None = None
+    co2_diagnostics: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)

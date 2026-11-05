@@ -51,6 +51,11 @@ def test_collect_baseline_appends_sensor_fields_without_model(tmp_path):
     assert rows[0]["co2_ppm"] == "391.0"
     assert rows[0]["temperature_c"] == "25.0"
     assert rows[0]["valid"] == "True"
+    assert rows[0]["co_timestamp"]
+    assert rows[0]["co2_timestamp"]
+    assert float(rows[0]["cycle_end_monotonic"]) >= float(rows[0]["cycle_start_monotonic"])
+    assert rows[0]["co_diagnostics"] == "{}"
+    assert rows[0]["co2_diagnostics"] == "{}"
 
 
 def test_collect_baseline_does_not_overwrite_existing_rows(tmp_path):

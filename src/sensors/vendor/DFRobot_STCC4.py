@@ -15,6 +15,8 @@
 import smbus2
 import time
 from typing import Optional, Tuple, Union
+
+from ..stcc4_protocol import validate_measurement_crc
  
 class DFRobot_STCC4:
     """Base class for DFRobot STCC4 CO2 sensor"""
@@ -338,6 +340,8 @@ class DFRobot_STCC4_I2C(DFRobot_STCC4):
         """Read measurement data"""
         raw_data = self._read_data(self.STCC4_READ_MEASURE, 12)
         if raw_data is None or len(raw_data) < 12:
+            return None
+        if not validate_measurement_crc(raw_data):
             return None
             
         # Parse CO2 concentration

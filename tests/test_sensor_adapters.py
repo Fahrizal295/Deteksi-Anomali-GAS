@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from src.models import SensorReading
 from src.sensors.stcc4 import STCC4Reader
 from src.sensors.ze07_co import ZE07COReader
@@ -36,6 +38,49 @@ def test_ze07_retries_a_transient_uart_timeout():
     reading = ZE07COReader(serial_factory=lambda *args, **kwargs: serial).read()
     assert reading.co_ppm == 0.5
     assert serial.calls == 2
+
+
+def test_ze07_reassembles_partial_frame_across_reads():
+    frame = ze07_frame(1.2)
+
+    class Serial:
+        def __init__(self):
+            self.chunks = [frame[:4], frame[4:]]
+
+        def read(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+        def close(self):
+            pass
+
+    serial = Serial()
+    reader = ZE07COReader(serial_factory=lambda *args, **kwargs: serial, read_attempts=2)
+    reading = reader.read()
+    assert reading.co_ppm == pytest.approx(1.2)
+    assert reader._buffer == bytearray()
+    assert reader.diagnostics["bytes_received"] == 9
+
+
+def test_ze07_reports_checksum_error_and_timeout():
+    frame = bytearray(ze07_frame(1.2))
+    frame[-1] ^= 0x01
+
+    class Serial:
+        def read(self, _size):
+            return bytes(frame)
+
+        def close(self):
+            pass
+
+    reader = ZE07COReader(serial_factory=lambda *args, **kwargs: Serial(), read_attempts=1)
+    try:
+        reader.read()
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError("corrupt frame should time out")
+    assert reader.diagnostics["checksum_errors"] == 1
+    assert reader.diagnostics["timeouts"] == 1
 
 
 class FakeSTCC4:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,14 @@ BASELINE_FIELDS = (
     "co_error",
     "co2_valid",
     "co2_error",
+    "co_timestamp",
+    "co2_timestamp",
+    "cycle_start_timestamp",
+    "cycle_end_timestamp",
+    "cycle_start_monotonic",
+    "cycle_end_monotonic",
+    "co_diagnostics",
+    "co2_diagnostics",
 )
 
 
@@ -46,6 +55,8 @@ def _write_row(path: Path, row: dict[str, object]) -> None:
 
 
 def _sensor_reading(co_reader, co2_reader) -> SensorReading:
+    cycle_start_monotonic = time.monotonic()
+    cycle_start_timestamp = datetime.now(timezone.utc)
     co = co2 = None
     co_error = co2_error = None
     try:
@@ -57,13 +68,16 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
     except Exception as exc:
         co2_error = f"STCC4: {exc}"
 
-    timestamp = co.timestamp if co is not None else (
-        co2.timestamp if co2 is not None else datetime.now(timezone.utc)
-    )
+    cycle_end_monotonic = time.monotonic()
+    cycle_end_timestamp = datetime.now(timezone.utc)
     errors = [error for error in (co_error, co2_error, getattr(co, "error", None), getattr(co2, "error", None)) if error]
+    co_diagnostics = json.dumps(getattr(co_reader, "diagnostics", {}), sort_keys=True)
+    co2_diagnostics = json.dumps(getattr(co2_reader, "diagnostics", {}), sort_keys=True)
     return SensorReading(
-        timestamp=timestamp,
-        monotonic_time=time.monotonic(),
+        # Combined rows use one consistent cycle-end UTC timestamp. Individual
+        # sensor timestamps remain available for communication diagnostics.
+        timestamp=cycle_end_timestamp,
+        monotonic_time=cycle_end_monotonic,
         co_ppm=co.co_ppm if co is not None else None,
         co2_ppm=co2.co2_ppm if co2 is not None else None,
         temperature_c=co2.temperature_c if co2 is not None else None,
@@ -76,6 +90,14 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
         co_error=co_error or (co.error if co is not None else None),
         co2_valid=co2.valid if co2 is not None else False,
         co2_error=co2_error or (co2.error if co2 is not None else None),
+        co_timestamp=co.timestamp if co is not None else None,
+        co2_timestamp=co2.timestamp if co2 is not None else None,
+        cycle_start_timestamp=cycle_start_timestamp,
+        cycle_end_timestamp=cycle_end_timestamp,
+        cycle_start_monotonic=cycle_start_monotonic,
+        cycle_end_monotonic=cycle_end_monotonic,
+        co_diagnostics=co_diagnostics,
+        co2_diagnostics=co2_diagnostics,
     )
 
 
