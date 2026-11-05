@@ -18,3 +18,5 @@ logs/*
 .vscode/
 .DS_Store
 Thumbs.db
+.pytest_cache/
+*.log
