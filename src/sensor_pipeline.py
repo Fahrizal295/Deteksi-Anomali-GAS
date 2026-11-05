@@ -48,6 +48,9 @@ class SensorPipeline:
         row = checked.as_dict()
         row.update(
             {"co_ma": None, "co2_ma": None, "anomaly_score": None, "is_anomaly": False,
+             "if_status": "SENSOR ERROR" if not checked.valid else "NOT READY",
+             "safety_status": WarningStatus.SENSOR_ERROR.value if not checked.valid else WarningStatus.NORMAL.value,
+             # Backward-compatible alias used by the earlier evaluation code.
              "status": WarningStatus.SENSOR_ERROR.value if not checked.valid else WarningStatus.NORMAL.value}
         )
         if not checked.valid:
@@ -63,6 +66,9 @@ class SensorPipeline:
         scored = self.detector.predict(features)
         latest = scored.iloc[-1]
         is_anomaly = bool(latest["is_anomaly"])
+        if_status = "ANOMALY" if is_anomaly else (
+            "NORMAL" if bool(latest["feature_ready"]) else "NOT READY"
+        )
         rising = bool((latest.get("rate_co", 0) > 0) or (latest.get("rate_co2", 0) > 0))
         status = self.warning_manager.evaluate(
             checked.co_ppm, checked.co2_ppm, is_anomaly=is_anomaly, rising=rising
@@ -70,6 +76,7 @@ class SensorPipeline:
         row.update(
             {"co_ma": latest["co_ma"], "co2_ma": latest["co2_ma"],
              "anomaly_score": latest["anomaly_score"], "is_anomaly": is_anomaly,
+             "if_status": if_status, "safety_status": status.value,
              "status": status.value, "error": None}
         )
         self.rows.append(row)

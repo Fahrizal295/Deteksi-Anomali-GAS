@@ -36,6 +36,15 @@ def apply_warnings(frame: pd.DataFrame, manager: WarningManager | None = None) -
     result["warning_detected"] = result["status"].isin(
         [WarningStatus.EARLY_WARNING.value, WarningStatus.THRESHOLD_ALERT.value]
     )
+    result["safety_status"] = result["status"]
+    if "feature_ready" in result:
+        result["if_status"] = "NOT READY"
+        ready = result["feature_ready"].astype(bool)
+        result.loc[ready, "if_status"] = result.loc[ready, "is_anomaly"].map(
+            {True: "ANOMALY", False: "NORMAL"}
+        )
+    else:
+        result["if_status"] = result["is_anomaly"].map({True: "ANOMALY", False: "NORMAL"})
     return result
 
 

@@ -31,3 +31,21 @@ def test_pipeline_keeps_environmental_values_out_of_model_features():
     assert result["temperature_c"] == 25.0
     assert result["humidity_rh"] == 50.0
     assert set(pipeline.detector.model.n_features_in_ for _ in [0]) == {2}
+
+
+def test_isolation_status_is_separate_from_safety_status():
+    pipeline = SensorPipeline(train_normal_detector())
+    result = None
+    for index in range(8):
+        result = pipeline.process(reading(index, co=0.5, co2=390.0))
+    assert result["if_status"] in {"ANOMALY", "NORMAL"}
+    assert result["safety_status"] == "NORMAL"
+    assert result["status"] == result["safety_status"]
+
+
+def test_sensor_error_sets_both_status_indicators():
+    pipeline = SensorPipeline(train_normal_detector())
+    result = pipeline.process(reading(0, status=256))
+    assert result["if_status"] == "SENSOR ERROR"
+    assert result["safety_status"] == "SENSOR ERROR"
+    assert result["status"] == "SENSOR ERROR"

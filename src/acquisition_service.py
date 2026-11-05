@@ -12,7 +12,21 @@ from .anomaly_detector import IsolationForestDetector
 from .config import DEFAULT_CONFIG
 from .dummy_generator import SCENARIOS, generate_scenario
 from .models import SensorReading
-from .sensor_pipeline import SensorPipeline, dummy_reading, error_reading, train_normal_detector
+from .sensor_pipeline import SensorPipeline, dummy_reading, error_reading
+from .validation import validate_reading
+
+BASELINE_FIELDS = (
+    "timestamp",
+    "co_ppm",
+    "co2_ppm",
+    "temperature_c",
+    "humidity_rh",
+    "co2_status",
+    "valid",
+    "error",
+    "source",
+    "monotonic_time",
+)
 
 
 def _write_row(path: Path, row: dict[str, object]) -> None:
@@ -34,17 +48,97 @@ def _sensor_reading(co_reader, co2_reader) -> SensorReading:
             timestamp=co.timestamp, monotonic_time=time.monotonic(), co_ppm=co.co_ppm,
             co2_ppm=co2.co2_ppm, temperature_c=co2.temperature_c,
             humidity_rh=co2.humidity_rh, co2_status=co2.co2_status,
-            source="SENSOR", valid=True,
+            source="SENSOR", valid=co.valid and co2.valid,
+            error="; ".join(error for error in (co.error, co2.error) if error) or None,
         )
     except Exception as exc:  # hardware errors become traceable SENSOR_ERROR rows
         return error_reading("SENSOR", f"acquisition error: {exc}")
+
+
+def _open_sensor_readers():
+    from .sensors.stcc4 import STCC4Reader
+    from .sensors.ze07_co import ZE07COReader
+
+    co_reader, co2_reader = ZE07COReader(), STCC4Reader()
+    co_reader.open()
+    try:
+        co2_reader.open()
+    except Exception:
+        co_reader.close()
+        raise
+    return co_reader, co2_reader
+
+
+def _write_baseline_row(path: Path, reading: SensorReading) -> None:
+    """Append one baseline row and refuse an incompatible existing file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.exists() and path.stat().st_size > 0
+    if exists:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            header = tuple(next(csv.reader(handle), ()))
+        if header != BASELINE_FIELDS:
+            raise ValueError(
+                f"Existing baseline CSV has incompatible header {header!r}; "
+                f"expected {BASELINE_FIELDS!r}. Choose a new output path."
+            )
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=BASELINE_FIELDS)
+        if not exists:
+            writer.writeheader()
+        row = reading.as_dict()
+        writer.writerow({field: "" if row.get(field) is None else row.get(field) for field in BASELINE_FIELDS})
+
+
+def collect_baseline(
+    duration_seconds: float,
+    output: Path,
+    *,
+    co_reader=None,
+    co2_reader=None,
+    interval_seconds: float = DEFAULT_CONFIG.sampling_interval_seconds,
+    clock=time.monotonic,
+    sleep_fn=time.sleep,
+) -> int:
+    """Collect raw sensor baseline data without loading or training a model."""
+    if duration_seconds <= 0:
+        raise ValueError("duration_seconds must be positive")
+    if interval_seconds <= 0:
+        raise ValueError("interval_seconds must be positive")
+    owns_readers = co_reader is None or co2_reader is None
+    if (co_reader is None) != (co2_reader is None):
+        raise ValueError("co_reader and co2_reader must be provided together")
+    if owns_readers:
+        co_reader, co2_reader = _open_sensor_readers()
+
+    started = clock()
+    next_tick = started
+    count = 0
+    try:
+        while clock() - started < duration_seconds:
+            reading = validate_reading(_sensor_reading(co_reader, co2_reader))
+            _write_baseline_row(output, reading)
+            count += 1
+            next_tick += interval_seconds
+            sleep_fn(max(0.0, next_tick - clock()))
+    except KeyboardInterrupt:
+        print(f"Baseline collection interrupted safely after {count} samples.")
+    finally:
+        if owns_readers:
+            co_reader.close()
+            co2_reader.close()
+    return count
 
 
 def run(mode: str, scenario: str, output: Path, model_path: Path, control: Path,
         max_samples: int | None = None) -> None:
     if mode == "sensor" and __import__("os").name == "nt":
         raise RuntimeError("--mode sensor is Raspberry Pi only; use --mode dummy on Windows")
-    detector = train_normal_detector(DEFAULT_CONFIG, model_path) if not model_path.exists() else IsolationForestDetector.load(model_path)
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"No compatible offline model at {model_path}. "
+            "Review a normal baseline CSV and train with src.offline_training first."
+        )
+    detector = IsolationForestDetector.load(model_path, DEFAULT_CONFIG)
     pipeline = SensorPipeline(detector)
     samples = generate_scenario(scenario, max_samples or 10000, config=DEFAULT_CONFIG)
     co_reader = co2_reader = None
@@ -82,13 +176,22 @@ def run(mode: str, scenario: str, output: Path, model_path: Path, control: Path,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("dummy", "sensor"), default="dummy")
+    parser.add_argument("--mode", choices=("dummy", "sensor", "collect-baseline"), default="dummy")
     parser.add_argument("--scenario", choices=SCENARIOS, default="normal")
     parser.add_argument("--output", type=Path, default=Path("data/live_readings.csv"))
     parser.add_argument("--model", type=Path, default=Path("data/models/isolation_forest.joblib"))
     parser.add_argument("--control", type=Path, default=Path("data/acquisition_control.json"))
     parser.add_argument("--max-samples", type=int)
+    parser.add_argument("--duration", type=float, help="Baseline collection duration in seconds")
     args = parser.parse_args()
+    if args.mode == "collect-baseline":
+        if args.duration is None:
+            parser.error("--duration is required with --mode collect-baseline")
+        if __import__("os").name == "nt":
+            raise RuntimeError("--mode collect-baseline is Raspberry Pi only")
+        output = args.output if args.output != Path("data/live_readings.csv") else Path("data/baseline_sensor_normal.csv")
+        collect_baseline(args.duration, output)
+        return
     run(args.mode, args.scenario, args.output, args.model, args.control, args.max_samples)
 
 

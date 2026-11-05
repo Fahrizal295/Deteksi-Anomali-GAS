@@ -71,8 +71,10 @@ def render() -> None:
         st.warning("Belum ada data. Jalankan acquisition service terlebih dahulu.")
         return
     latest = frame.iloc[-1]
-    status = str(latest.get("status", "SENSOR ERROR"))
-    st.markdown(f"### Status: <span style='color:{_status_color(status)}'>{status}</span>", unsafe_allow_html=True)
+    safety_status = str(latest.get("safety_status", latest.get("status", "SENSOR ERROR")))
+    if_status = str(latest.get("if_status", "UNKNOWN"))
+    st.markdown(f"### Safety status: <span style='color:{_status_color(safety_status)}'>{safety_status}</span>", unsafe_allow_html=True)
+    st.metric("Isolation Forest", if_status)
     cols = st.columns(6)
     cols[0].metric("CO (ppm)", f"{float(latest['co_ppm']):.2f}" if pd.notna(latest.get("co_ppm")) else "-")
     cols[1].metric("CO₂ (ppm)", f"{float(latest['co2_ppm']):.1f}" if pd.notna(latest.get("co2_ppm")) else "-")
@@ -83,12 +85,13 @@ def render() -> None:
     st.caption(f"Pembacaan terakhir: {latest.get('timestamp', '-')}")
     left, right = st.columns(2)
     with left:
-        st.plotly_chart(_chart(frame, "co_ppm", "co_ma", DEFAULT_CONFIG.co_threshold_ppm, "CO"), use_container_width=True)
+        st.plotly_chart(_chart(frame, "co_ppm", "co_ma", DEFAULT_CONFIG.co_threshold_ppm, "CO"), width="stretch")
     with right:
-        st.plotly_chart(_chart(frame, "co2_ppm", "co2_ma", DEFAULT_CONFIG.co2_threshold_ppm, "CO₂"), use_container_width=True)
+        st.plotly_chart(_chart(frame, "co2_ppm", "co2_ma", DEFAULT_CONFIG.co2_threshold_ppm, "CO₂"), width="stretch")
     st.subheader("Riwayat peringatan")
-    history = frame[frame["status"].isin(["EARLY WARNING", "THRESHOLD ALERT", "SENSOR ERROR"])]
-    st.dataframe(history[["timestamp", "status", "source", "error"]].tail(100), use_container_width=True)
+    history = frame[frame.get("safety_status", frame["status"]).isin(["EARLY WARNING", "THRESHOLD ALERT", "SENSOR ERROR"])]
+    history_columns = [column for column in ["timestamp", "if_status", "safety_status", "source", "error"] if column in history]
+    st.dataframe(history[history_columns].tail(100), width="stretch")
     st.download_button("Ekspor CSV", frame.to_csv(index=False).encode("utf-8"), "gas_readings.csv", "text/csv")
 
 
