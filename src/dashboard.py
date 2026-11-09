@@ -89,6 +89,27 @@ def _number(row: pd.Series, name: str, digits: int = 2) -> str:
     return f"{float(value):.{digits}f}"
 
 
+def _sensor_values_available(state: str, row: pd.Series | None) -> bool:
+    """Allow current sensor values only when the newest row is live and valid."""
+    if row is None or state != "LIVE":
+        return False
+    return str(row.get("valid", "False")).strip().lower() == "true"
+
+
+def _safe_number(row: pd.Series | None, name: str, available: bool, digits: int = 2) -> str:
+    if not available or row is None:
+        return "—"
+    return _number(row, name, digits)
+
+
+def _compact_model_status(status: str) -> str:
+    return {
+        "MODEL_UNAVAILABLE": "Unavailable",
+        "NOT_TRAINED": "Not trained",
+        "READY": "Ready",
+    }.get(status, status)
+
+
 def _render_controls() -> None:
     with st.sidebar:
         st.header("Kontrol acquisition")
@@ -111,49 +132,71 @@ def _render_controls() -> None:
 def _render_once() -> None:
     frame = load_readings()
     state, age = freshness_state(frame)
+    latest = frame.iloc[-1] if not frame.empty else None
+    values_available = _sensor_values_available(state, latest)
+
     st.markdown(
         f"### Data link: <span style='color:{_status_color(state)}'>{state}</span>"
         + (f" ({age:.1f} s)" if age is not None else ""),
         unsafe_allow_html=True,
     )
 
+    st.subheader("Pembacaan Sensor")
+    primary = st.columns(2)
+    primary[0].metric("CO", _safe_number(latest, "co_ppm", values_available, 2), "ppm")
+    primary[1].metric("CO₂", _safe_number(latest, "co2_ppm", values_available, 1), "ppm")
+    moving_average = st.columns(2)
+    moving_average[0].caption(
+        f"Moving Average CO (window 5): {_safe_number(latest, 'co_ma', values_available, 2)} ppm"
+    )
+    moving_average[1].caption(
+        f"Moving Average CO₂ (window 5): {_safe_number(latest, 'co2_ma', values_available, 1)} ppm"
+    )
+    secondary = st.columns(2)
+    secondary[0].metric("Temperatur", _safe_number(latest, "temperature_c", values_available, 1), "°C")
+    secondary[1].metric("Kelembapan", _safe_number(latest, "humidity_rh", values_available, 1), "%RH")
+
+    st.subheader("Status Sistem")
+    if latest is None:
+        safety_status = "UNAVAILABLE"
+        if_status = "UNAVAILABLE"
+        model_status = "UNAVAILABLE"
+        sensor_quality = "NO DATA"
+        source = "-"
+    else:
+        raw_safety_status = str(latest.get("safety_status", latest.get("status", "SENSOR ERROR")))
+        raw_if_status = str(latest.get("if_status", "MODEL_UNAVAILABLE"))
+        model_status = str(latest.get("model_status", raw_if_status))
+        safety_status = raw_safety_status if values_available else "UNAVAILABLE"
+        if_status = raw_if_status if values_available else "UNAVAILABLE"
+        sensor_quality = "VALID" if values_available else ("STALE DATA" if state == "STALE" else "INVALID")
+        source = str(latest.get("source", "-"))
+    status_cols = st.columns(6)
+    status_cols[0].metric("Freshness", state)
+    status_cols[1].metric("Safety", safety_status)
+    status_cols[2].metric("Isolation Forest", _compact_model_status(if_status))
+    status_cols[3].metric("Model", _compact_model_status(model_status))
+    status_cols[4].metric("Sensor quality", sensor_quality)
+    status_cols[5].metric("Source", source)
+    if latest is None:
+        st.warning("Belum ada data di CSV. Jalankan acquisition service terlebih dahulu.")
+    elif not values_available:
+        st.warning("Nilai sensor disembunyikan karena data tidak LIVE dan valid.")
+    st.caption(
+        f"Pembacaan terakhir: {latest.get('timestamp', '-') if latest is not None else '-'} | "
+        f"Anomaly score: {_number(latest, 'anomaly_score', 4) if latest is not None and values_available else '-'} | "
+        f"STCC4 raw status: {latest.get('co2_status', '-') if latest is not None else '-'} | "
+        f"ZE07 state: {latest.get('co_frame_state', '-') if latest is not None else '-'}"
+    )
     if frame.empty:
-        st.warning("Belum ada data valid di CSV. Jalankan acquisition service terlebih dahulu.")
         return
 
-    latest = frame.iloc[-1]
-    safety_status = str(latest.get("safety_status", latest.get("status", "SENSOR ERROR")))
-    if_status = str(latest.get("if_status", "MODEL_UNAVAILABLE"))
-    model_status = str(latest.get("model_status", if_status))
-    sensor_valid = str(latest.get("valid", "False")).lower() == "true"
-    st.markdown(
-        f"### Safety status: <span style='color:{_status_color(safety_status)}'>{safety_status}</span>",
-        unsafe_allow_html=True,
-    )
-    status_cols = st.columns(4)
-    status_cols[0].metric("Isolation Forest", if_status)
-    status_cols[1].metric("Model", model_status)
-    status_cols[2].metric("Sensor quality", "VALID" if sensor_valid else "SENSOR ERROR")
-    status_cols[3].metric("Source", str(latest.get("source", "-")))
-    cols = st.columns(6)
-    cols[0].metric("CO (ppm)", _number(latest, "co_ppm"))
-    cols[1].metric("CO₂ (ppm)", _number(latest, "co2_ppm", 1))
-    cols[2].metric("CO MA", _number(latest, "co_ma"))
-    cols[3].metric("CO₂ MA", _number(latest, "co2_ma", 1))
-    cols[4].metric("Temperature (°C)", _number(latest, "temperature_c", 1))
-    cols[5].metric("Humidity (%RH)", _number(latest, "humidity_rh", 1))
-    st.caption(
-        f"Pembacaan terakhir: {latest.get('timestamp', '-')} | "
-        f"Anomaly score: {_number(latest, 'anomaly_score', 4)} | "
-        f"STCC4 raw status: {latest.get('co2_status', '-')} | "
-        f"ZE07 state: {latest.get('co_frame_state', '-')}"
-    )
     left, right = st.columns(2)
     with left:
         st.plotly_chart(_chart(frame, "co_ppm", "co_ma", DEFAULT_CONFIG.co_threshold_ppm, "CO"), width="stretch")
     with right:
         st.plotly_chart(_chart(frame, "co2_ppm", "co2_ma", DEFAULT_CONFIG.co2_threshold_ppm, "CO₂"), width="stretch")
-    st.subheader("Riwayat peringatan")
+    st.subheader("Riwayat Peringatan")
     safety_series = frame["safety_status"] if "safety_status" in frame else frame.get("status", pd.Series(dtype=str))
     history = frame[safety_series.isin(["EARLY WARNING", "THRESHOLD ALERT", "SENSOR ERROR"])]
     history_columns = [column for column in ["timestamp", "if_status", "safety_status", "source", "valid", "error"] if column in history]
