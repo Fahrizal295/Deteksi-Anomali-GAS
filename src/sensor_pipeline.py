@@ -32,9 +32,15 @@ def train_normal_detector(
 class SensorPipeline:
     """Stateful causal pipeline; invalid readings never enter the SMA/model."""
 
-    def __init__(self, detector: IsolationForestDetector, config: SimulationConfig = DEFAULT_CONFIG):
+    def __init__(
+        self,
+        detector: IsolationForestDetector | None,
+        config: SimulationConfig = DEFAULT_CONFIG,
+        model_status: str | None = None,
+    ):
         self.detector = detector
         self.config = config
+        self.model_status = model_status or ("READY" if detector is not None else "MODEL_UNAVAILABLE")
         self.warning_manager = WarningManager(config)
         self.valid_samples: list[GasSample] = []
         self.rows: list[dict[str, object]] = []
@@ -47,8 +53,10 @@ class SensorPipeline:
         checked = validate_reading(reading)
         row = checked.as_dict()
         row.update(
-            {"co_ma": None, "co2_ma": None, "anomaly_score": None, "is_anomaly": False,
+            {"co_ma": None, "co2_ma": None, "feature_ready": False,
+             "rate_co": None, "rate_co2": None, "anomaly_score": None, "is_anomaly": None,
              "if_status": "SENSOR ERROR" if not checked.valid else "NOT READY",
+             "model_status": self.model_status,
              "safety_status": WarningStatus.SENSOR_ERROR.value if not checked.valid else WarningStatus.NORMAL.value,
              # Backward-compatible alias used by the earlier evaluation code.
              "status": WarningStatus.SENSOR_ERROR.value if not checked.valid else WarningStatus.NORMAL.value}
@@ -63,19 +71,28 @@ class SensorPipeline:
         features = extract_features(
             preprocess_samples(self.valid_samples, self.config.moving_average_window)
         )
-        scored = self.detector.predict(features)
-        latest = scored.iloc[-1]
-        is_anomaly = bool(latest["is_anomaly"])
-        if_status = "ANOMALY" if is_anomaly else (
-            "NORMAL" if bool(latest["feature_ready"]) else "NOT READY"
-        )
+        if self.detector is None:
+            latest = features.iloc[-1]
+            is_anomaly = False
+            if_status = self.model_status
+            anomaly_score = None
+        else:
+            scored = self.detector.predict(features)
+            latest = scored.iloc[-1]
+            is_anomaly = bool(latest["is_anomaly"])
+            if_status = "ANOMALY" if is_anomaly else (
+                "NORMAL" if bool(latest["feature_ready"]) else "NOT READY"
+            )
+            anomaly_score = latest["anomaly_score"]
         rising = bool((latest.get("rate_co", 0) > 0) or (latest.get("rate_co2", 0) > 0))
         status = self.warning_manager.evaluate(
             checked.co_ppm, checked.co2_ppm, is_anomaly=is_anomaly, rising=rising
         )
         row.update(
             {"co_ma": latest["co_ma"], "co2_ma": latest["co2_ma"],
-             "anomaly_score": latest["anomaly_score"], "is_anomaly": is_anomaly,
+             "feature_ready": bool(latest["feature_ready"]),
+             "rate_co": latest.get("rate_co"), "rate_co2": latest.get("rate_co2"),
+             "anomaly_score": anomaly_score, "is_anomaly": (is_anomaly if self.detector is not None else None),
              "if_status": if_status, "safety_status": status.value,
              "status": status.value, "error": None}
         )

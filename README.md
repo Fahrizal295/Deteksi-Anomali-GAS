@@ -32,7 +32,7 @@ python -m src.offline_training baseline_sensor_normal.csv --model data/models/is
 python -m src.offline_training baseline_sensor_normal.csv --model data/models/isolation_forest.joblib --approve
 ```
 
-Jalankan acquisition di terminal pertama:
+Jalankan acquisition dummy di terminal pertama:
 
 ```powershell
 python -m src.acquisition_service --mode dummy --scenario normal
@@ -44,7 +44,7 @@ Jalankan dashboard di terminal kedua:
 python -m streamlit run src/dashboard.py --server.port 8501
 ```
 
-Buka `http://localhost:8501`. Skenario dapat dipilih melalui kontrol dashboard; tombol Start/Pause/Reset mengirim perintah ke acquisition service melalui file kontrol. Acquisition service menolak berjalan jika model belum dilatih offline.
+Buka `http://localhost:8501`. Skenario dapat dipilih melalui kontrol dashboard; tombol Start/Pause/Reset mengirim perintah ke acquisition service melalui file kontrol. Mode sensor live tetap berjalan tanpa model, sedangkan mode dengan model hanya mengaktifkan inference jika model kompatibel tersedia.
 
 Smoke test singkat dengan model yang sudah tersedia:
 
@@ -62,6 +62,32 @@ python3 -m src.offline_training baseline_sensor_normal.csv --model data/models/i
 python3 -m src.offline_training baseline_sensor_normal.csv --model data/models/isolation_forest.joblib --approve
 python3 -m src.acquisition_service --mode sensor
 ```
+
+Untuk live monitoring sensor, model Isolation Forest bersifat opsional. Tanpa model, acquisition tetap menulis CO, CO2, Moving Average, status kualitas sensor, dan `safety_status`; kolom `if_status` menjadi `NOT_TRAINED` atau `MODEL_UNAVAILABLE` dan anomaly score tetap kosong. Dengan model kompatibel, inference memakai fitur `co_ma` dan `co2_ma`.
+
+Gunakan dua terminal pada Raspberry Pi. Jangan menjalankan `collect-baseline` sebagai sumber dashboard live:
+
+Terminal 1 — acquisition sensor live:
+
+```bash
+cd /path/ke/Deteksi-Anomali-GAS
+python3 -m src.acquisition_service \
+  --mode sensor \
+  --output data/live_sensor_readings.csv \
+  --lock data/acquisition_service.lock
+```
+
+Terminal 2 — dashboard:
+
+```bash
+cd /path/ke/Deteksi-Anomali-GAS
+GAS_DATA_FILE=data/live_sensor_readings.csv \
+python3 -m streamlit run src/dashboard.py \
+  --server.address 0.0.0.0 \
+  --server.port 8501
+```
+
+Dashboard melakukan refresh otomatis setiap 2 detik, hanya membaca CSV, dan menampilkan `LIVE`, `STALE`, atau `OFFLINE` berdasarkan umur timestamp terakhir. `data/live_sensor_readings.csv` adalah file live baru; file lama seperti `data/live_readings.csv` tidak diubah. Acquisition menolak append jika header CSV tidak kompatibel. Lock mencegah dua acquisition service mengakses sensor secara bersamaan.
 
 Untuk akses dashboard dari laptop/HP pada jaringan yang sama:
 

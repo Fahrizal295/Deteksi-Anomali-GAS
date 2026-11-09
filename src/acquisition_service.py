@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .acquisition_control import read_command
+from .acquisition_control import AcquisitionLock, read_command
 from .anomaly_detector import IsolationForestDetector
 from .config import DEFAULT_CONFIG
 from .dummy_generator import SCENARIOS, generate_scenario
@@ -47,16 +47,40 @@ BASELINE_FIELDS = (
     "co_frame_state",
 )
 
+LIVE_FIELDS = tuple(SensorReading.__dataclass_fields__) + (
+    "co_ma",
+    "co2_ma",
+    "feature_ready",
+    "rate_co",
+    "rate_co2",
+    "anomaly_score",
+    "is_anomaly",
+    "if_status",
+    "model_status",
+    "safety_status",
+    "status",
+)
+DEFAULT_LIVE_OUTPUT = Path("data/live_sensor_readings.csv")
+
 
 def _write_row(path: Path, row: dict[str, object]) -> None:
+    """Append a live row only when the existing header is exactly compatible."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    fields = list(row.keys())
+    fields = LIVE_FIELDS
     exists = path.exists() and path.stat().st_size > 0
+    if exists:
+        with path.open("r", newline="", encoding="utf-8") as handle:
+            header = tuple(next(csv.reader(handle), ()))
+        if header != fields:
+            raise ValueError(
+                f"Existing live CSV has incompatible header {header!r}; "
+                f"expected {fields!r}. Choose a new output path; old data was not changed."
+            )
     with path.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         if not exists:
             writer.writeheader()
-        writer.writerow({key: "" if value is None else value for key, value in row.items()})
+        writer.writerow({key: "" if row.get(key) is None else row.get(key) for key in fields})
 
 
 def _sensor_reading(co_reader, co2_reader) -> SensorReading:
@@ -214,63 +238,84 @@ def collect_baseline(
 
 
 def run(mode: str, scenario: str, output: Path, model_path: Path, control: Path,
-        max_samples: int | None = None) -> None:
-    if mode == "sensor" and __import__("os").name == "nt":
+        max_samples: int | None = None, lock_path: Path = Path("data/acquisition_service.lock"),
+        sensor_readers_factory=None, sleep_fn=time.sleep, platform_name: str | None = None) -> None:
+    if mode == "sensor" and (platform_name or __import__("os").name) == "nt":
         raise RuntimeError("--mode sensor is Raspberry Pi only; use --mode dummy on Windows")
-    if not model_path.exists():
-        raise FileNotFoundError(
-            f"No compatible offline model at {model_path}. "
-            "Review a normal baseline CSV and train with src.offline_training first."
-        )
-    detector = IsolationForestDetector.load(model_path, DEFAULT_CONFIG)
-    pipeline = SensorPipeline(detector)
+    detector = None
+    model_status = "NOT_TRAINED"
+    if model_path.exists():
+        try:
+            detector = IsolationForestDetector.load(model_path, DEFAULT_CONFIG)
+            model_status = "READY"
+        except Exception as exc:
+            model_status = "MODEL_UNAVAILABLE"
+            print(f"Isolation Forest disabled: {exc}")
+    elif mode != "sensor":
+        model_status = "NOT_TRAINED"
+    pipeline = SensorPipeline(detector, model_status=model_status)
     samples = generate_scenario(scenario, max_samples or 10000, config=DEFAULT_CONFIG)
     co_reader = co2_reader = None
-    if mode == "sensor":
-        from .sensors.stcc4 import STCC4Reader
-        from .sensors.ze07_co import ZE07COBackgroundReader
-        co_reader, co2_reader = ZE07COBackgroundReader(
-            freshness_timeout_seconds=DEFAULT_CONFIG.ze07_freshness_timeout_seconds
-        ), STCC4Reader()
-        co_reader.start(); co2_reader.open()
     paused = False
     index = 0
     next_tick = time.monotonic()
-    try:
-        while max_samples is None or index < max_samples:
-            command = read_command(control)
-            if command:
-                if command.get("command") == "pause": paused = True
-                if command.get("command") == "start": paused = False
-                if command.get("command") == "reset": pipeline.reset(); output.unlink(missing_ok=True)
-                if command.get("scenario") in SCENARIOS:
-                    scenario = command["scenario"]; samples = generate_scenario(scenario, 10000, config=DEFAULT_CONFIG)
-            if paused:
-                time.sleep(0.1); continue
-            if mode == "dummy":
-                reading = dummy_reading(samples[index], index)
-            else:
-                reading = _sensor_reading(co_reader, co2_reader)
-            _write_row(output, pipeline.process(reading))
-            index += 1
-            next_tick += DEFAULT_CONFIG.sampling_interval_seconds
-            time.sleep(max(0.0, next_tick - time.monotonic()))
-    finally:
-        if co_reader is not None:
-            if hasattr(co_reader, "stop"):
-                co_reader.stop()
-            else:
-                co_reader.close()
-        if co2_reader is not None: co2_reader.close()
+    with AcquisitionLock(lock_path):
+        try:
+            if mode == "sensor":
+                from .sensors.stcc4 import STCC4Reader
+                from .sensors.ze07_co import ZE07COBackgroundReader
+                if sensor_readers_factory is None:
+                    sensor_readers_factory = lambda: (
+                        ZE07COBackgroundReader(
+                            freshness_timeout_seconds=DEFAULT_CONFIG.ze07_freshness_timeout_seconds
+                        ),
+                        STCC4Reader(),
+                    )
+                co_reader, co2_reader = sensor_readers_factory()
+                co_reader.start()
+                co2_reader.open()
+            while max_samples is None or index < max_samples:
+                command = read_command(control)
+                if command:
+                    if command.get("command") == "pause": paused = True
+                    if command.get("command") == "start": paused = False
+                    if command.get("command") == "reset": pipeline.reset()
+                    if mode == "dummy" and command.get("scenario") in SCENARIOS:
+                        scenario = command["scenario"]
+                        samples = generate_scenario(scenario, 10000, config=DEFAULT_CONFIG)
+                if paused:
+                    time.sleep(0.1)
+                    continue
+                if mode == "dummy":
+                    reading = dummy_reading(samples[index], index)
+                else:
+                    reading = _sensor_reading(co_reader, co2_reader)
+                try:
+                    _write_row(output, pipeline.process(reading))
+                except (OSError, ValueError) as exc:
+                    print(f"Acquisition stopped: cannot write compatible live CSV: {exc}")
+                    break
+                index += 1
+                next_tick += DEFAULT_CONFIG.sampling_interval_seconds
+                sleep_fn(max(0.0, next_tick - time.monotonic()))
+        finally:
+            if co_reader is not None:
+                if hasattr(co_reader, "stop"):
+                    co_reader.stop()
+                else:
+                    co_reader.close()
+            if co2_reader is not None:
+                co2_reader.close()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("dummy", "sensor", "collect-baseline"), default="dummy")
     parser.add_argument("--scenario", choices=SCENARIOS, default="normal")
-    parser.add_argument("--output", type=Path, default=Path("data/live_readings.csv"))
+    parser.add_argument("--output", type=Path, default=DEFAULT_LIVE_OUTPUT)
     parser.add_argument("--model", type=Path, default=Path("data/models/isolation_forest.joblib"))
     parser.add_argument("--control", type=Path, default=Path("data/acquisition_control.json"))
+    parser.add_argument("--lock", type=Path, default=Path("data/acquisition_service.lock"))
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--duration", type=float, help="Baseline collection duration in seconds")
     args = parser.parse_args()
@@ -279,10 +324,11 @@ def main() -> None:
             parser.error("--duration is required with --mode collect-baseline")
         if __import__("os").name == "nt":
             raise RuntimeError("--mode collect-baseline is Raspberry Pi only")
-        output = args.output if args.output != Path("data/live_readings.csv") else Path("data/baseline_sensor_normal.csv")
-        collect_baseline(args.duration, output)
+        output = args.output if args.output != DEFAULT_LIVE_OUTPUT else Path("data/baseline_sensor_normal.csv")
+        with AcquisitionLock(args.lock):
+            collect_baseline(args.duration, output)
         return
-    run(args.mode, args.scenario, args.output, args.model, args.control, args.max_samples)
+    run(args.mode, args.scenario, args.output, args.model, args.control, args.max_samples, args.lock)
 
 
 if __name__ == "__main__":
